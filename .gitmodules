@@ -1,0 +1,3 @@
+[submodule "keras-frcnn"]
+	path = keras-frcnn
+	url = https://github.com/kbardool/keras-frcnn.git
