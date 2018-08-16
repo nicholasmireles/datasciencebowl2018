@@ -1,2 +1,5 @@
 *.png
 keras-env/*
+stage1_test/*
+stage1_train/*
+zips/*
