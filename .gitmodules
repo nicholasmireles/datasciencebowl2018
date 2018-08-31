@@ -1,0 +1,3 @@
+[submodule "keras-maskrcnn"]
+	path = keras-maskrcnn
+	url = https://github.com/fizyr/keras-maskrcnn.git
