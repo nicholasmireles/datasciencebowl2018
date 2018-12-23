@@ -1,109 +1,133 @@
-"""
-Copyright 2017-2018 Fizyr (https://fizyr.com)
+import keras 
+import tensorflow as tf
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-"""
-
-from __future__ import print_function
-
-from keras_retinanet.utils.visualization import draw_detections
-
-from .overlap import compute_overlap
-from .visualization import draw_masks
+# import keras_retinanet
+from keras_maskrcnn import models
+from keras_maskrcnn.utils.visualization import draw_mask
+from keras_retinanet.utils.visualization import draw_box, draw_caption, draw_annotations
+from keras_retinanet.utils.image import read_image_bgr, preprocess_image, resize_image
+from keras_retinanet.utils.colors import label_color
+from keras_retinanet.preprocessing.csv_generator import CSVGenerator
 
 import numpy as np
 import os
 
 import cv2
+from argparse import ArgumentParser
 
-def _masks_to_rles(masks,threshold=.5):
-    for mask in masks:
-        _mask_to_rle(mask,threshold)
+from time import time
 
-def _mask_to_rle(mask,threshold=.5):
-    line = np.where(x.T.flatten() > threshold)[0]
+class ImageGenerator:
+    def __init__(self, image_dir):
+        self.image_dir = image_dir
+        self.image_paths = os.listdir(image_dir)
+        self.num_images = len(self.image_paths)
+
+        print("Found %i images." % self.num_images)
+
+    def load_images(self):
+
+        for i in range(self.num_images):
+            path = self.image_paths[i]
+            image_name = os.path.join(self.image_dir, path, "images", path + ".png")
+            if not os.path.exists(image_name):
+                continue
+
+            image = read_image_bgr(image_name)
+            draw = image.copy()
+            draw = cv2.cvtColor(draw, cv2.COLOR_BGR2RGB)
+
+            image = preprocess_image(image)
+            image, scale = resize_image(image)
+
+            yield i, path, image, draw, scale
+
+
+def _masks_to_rles(masks, threshold=.5):
+    results = [None for _ in range(len(masks))]
+    for i, mask in enumerate(masks):
+        results[i] = _mask_to_rle(mask, threshold)
+    return results
+
+
+def _mask_to_rle(mask, threshold=.5):
+    line = np.where(mask.T.flatten() > threshold)[0]
 
     run_lengths = []
     prev = -2
 
     for b in line:
-        if (b > prev+1): run_lengths.extend((b+1,0))
+        if b > prev + 1: run_lengths.extend((b + 1, 0))
         run_lengths[-1] += 1
         prev = b
     return run_lengths
 
-def _get_detections(generator, model, score_threshold=0.05, max_detections=100, save_file=None):
-    """ Get the detections from the model using the generator.
 
-    The result is a list of lists such that the size is:
-        all_detections[num_images][num_classes] = detections[num_detections, 4 + num_classes]
+def get_session():
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    return tf.Session(config=config)
 
-    # Arguments
-        generator       : The generator used to run images through the model.
-        model           : The model to run on the images.
-        score_threshold : The score confidence threshold to use.
-        max_detections  : The maximum number of detections to use per image.
-        save_path       : The path to save the images with visualized detections to.
-    # Returns
-        A list of lists containing the detections for each image in the generator.
-    """
-    all_detections = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
-    all_masks      = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
 
-    for i in range(generator.size()):
-        raw_image    = generator.load_image(i)
-        image        = generator.preprocess_image(raw_image.copy())
-        image, scale = generator.resize_image(image)
-        image_name = generator.image_names[i]
+def get_model(model_path):
+    model = models.load_model(model_path, backbone_name='resnet50')
+    return model
 
-        # run network
+
+def get_detections(generator, model, out_dir, score_threshold=0.5):
+    all_results = [None for _ in range(generator.num_images)]
+
+    start = time()
+
+    print("Processing %i images." % generator.num_images)
+
+    for i, path, image, draw, scale in generator.load_images():
         outputs = model.predict_on_batch(np.expand_dims(image, axis=0))
-        boxes  = outputs[-4]
-        scores = outputs[-3]
-        labels = outputs[-2]
-        masks  = outputs[-1]
-
-        # correct boxes for image scale
+        boxes = outputs[-4][0]
+        scores = outputs[-3][0]
+        labels = outputs[-2][0]
+        masks = outputs[-1][0]
         boxes /= scale
 
-        # select indices which have a score above the threshold
-        indices = np.where(scores[0, :] > score_threshold)[0]
+        for box, score, label, mask in zip(boxes, scores, labels, masks):
+            if score < score_threshold:
+                break
+            b = box.astype(int)
+            mask = mask[:, :, label]
+            draw_mask(draw, b, mask, color=label_color(label))
 
-        # select those scores
-        scores = scores[0][indices]
+        out_name = os.path.join(out_dir, path + '.png')
+        cv2.imwrite(out_name, draw)
 
-        # find the order with which to sort the scores
-        scores_sort = np.argsort(-scores)[:max_detections]
+        rles = _masks_to_rles(masks)
+        all_results[i] = (path, boxes, rles)
 
-        # select detections
-        image_boxes      = boxes[0, indices[scores_sort], :]
-        image_scores     = scores[scores_sort]
-        image_labels     = labels[0, indices[scores_sort]]
-        image_masks      = masks[0, indices[scores_sort], :, :, image_labels]
-        image_detections = np.concatenate([image_boxes, np.expand_dims(image_scores, axis=1), np.expand_dims(image_labels, axis=1)], axis=1)
+    end = time()
+    print("Processed images in %is"% (end - start))
 
-        if save_file is not None:
-            rles = masks_to_rles(image_masks)
-            with open(save_file,"w") as outFile:
-                outFile.write("ImageId,EncodedPixels\n")
-                for rle in rles:
-                    outFile.write(image_name + "," + " ".join(rle) + "\n")
+    return all_results
 
-        # copy detections to all_detections
-        for label in range(generator.num_classes()):
-            all_detections[i][label] = image_detections[image_detections[:, -1] == label, :-1]
-            all_masks[i][label]      = image_masks[image_detections[:, -1] == label, ...]
 
-        print('{}/{}'.format(i + 1, generator.size()), end='\r')
+if __name__ == "__main__":
+    p = ArgumentParser()
+    p.add_argument('image_dir', help="The directory for the test images.")
+    p.add_argument('out_dir', help="The directory to output the test images.")
+    p.add_argument('model_path', help="The trained model to test.")
 
-    return all_detections, all_masks
+    args = p.parse_args()
+
+    keras.backend.tensorflow_backend.set_session(get_session())
+
+    model = get_model(args.model_path)
+
+    generator = ImageGenerator(args.image_dir)
+
+    results = get_detections(generator, model, args.out_dir)
+
+    with open("results.csv", "w") as outFile:
+        outFile.write("ImageId,EncodedPixels\n")
+        for result in results:
+            for rle in result[2]:
+                if rle is not None:
+                     if len(rle) > 0:
+                        outFile.write(result[0] + "," + " ".join([str(i) for i in rle]) + "\n")
