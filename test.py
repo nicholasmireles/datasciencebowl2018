@@ -1,7 +1,6 @@
 import keras 
 import tensorflow as tf
 
-# import keras_retinanet
 from keras_maskrcnn import models
 from keras_maskrcnn.utils.visualization import draw_mask
 from keras_retinanet.utils.visualization import draw_box, draw_caption, draw_annotations
@@ -46,13 +45,12 @@ class ImageGenerator:
 def _masks_to_rles(masks, threshold=.5):
     results = [None for _ in range(len(masks))]
     for i, mask in enumerate(masks):
-        results[i] = _mask_to_rle(mask, threshold)
+        results[i] = _mask_to_rle(mask,threshold=threshold)
     return results
 
 
 def _mask_to_rle(mask, threshold=.5):
     line = np.where(mask.T.flatten() > threshold)[0]
-
     run_lengths = []
     prev = -2
 
@@ -99,7 +97,7 @@ def get_detections(generator, model, out_dir, score_threshold=0.5):
         out_name = os.path.join(out_dir, path + '.png')
         cv2.imwrite(out_name, draw)
 
-        rles = _masks_to_rles(masks)
+        rles = _masks_to_rles(masks, threshold = score_threshold)
         all_results[i] = (path, boxes, rles)
 
     end = time()
@@ -113,21 +111,32 @@ if __name__ == "__main__":
     p.add_argument('image_dir', help="The directory for the test images.")
     p.add_argument('out_dir', help="The directory to output the test images.")
     p.add_argument('model_path', help="The trained model to test.")
+    p.add_argument('--threshold', default=.5, help="Threshold at which to filter the masks.")
 
     args = p.parse_args()
+
+    generator = ImageGenerator(args.image_dir)
 
     keras.backend.tensorflow_backend.set_session(get_session())
 
     model = get_model(args.model_path)
 
-    generator = ImageGenerator(args.image_dir)
+    results = get_detections(generator, model, args.out_dir, score_threshold= float(args.threshold))
 
-    results = get_detections(generator, model, args.out_dir)
-
+    valid = set()
     with open("results.csv", "w") as outFile:
         outFile.write("ImageId,EncodedPixels\n")
         for result in results:
+            missing = 0
             for rle in result[2]:
-                if rle is not None:
-                     if len(rle) > 0:
-                        outFile.write(result[0] + "," + " ".join([str(i) for i in rle]) + "\n")
+                 if len(rle) > 0:
+                    outFile.write(result[0] + "," + " ".join([str(i) for i in rle]) + "\n")
+                 else:
+                    missing += 1
+            if missing < len(result[2]):
+                valid.add(result[0])
+
+    missing_paths = set(generator.image_paths) - valid
+
+    for p in missing_paths:
+        print("Missing RLEs for %s" % path)
