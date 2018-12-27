@@ -7,6 +7,7 @@ Currently implementing MaskRCNN based off RetinaNet.
 ```
 python keras_maskrcnn/bin/train.py csv [annotations file] [class map]
 ```
+This needs to be run from the keras_maskrcnn submodule folder.
 
 ## Testing
 ```
