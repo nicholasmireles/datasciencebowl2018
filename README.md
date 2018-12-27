@@ -5,7 +5,7 @@ Currently implementing MaskRCNN based off RetinaNet.
 
 ## Training
 ```
-python keras_maskrcnn/bin/train.py csv /path/to/mask_boxes.csv /path/to/class.map
+python keras_maskrcnn/bin/train.py csv [annotations file] [class map]
 ```
 
 ## Testing
